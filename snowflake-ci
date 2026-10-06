@@ -1,0 +1,42 @@
+name: snowflake-ci
+on:
+  pull_request:
+    branches: [main]
+    paths: ["migrations/**", "tests/**", "scripts/**", "schemachange-config.yml"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_ROLE: ${{ vars.SF_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SF_WAREHOUSE }}
+      SNOWFLAKE_AUTHENTICATOR: SNOWFLAKE_JWT
+      SF_DATABASE: ${{ vars.SF_DATABASE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install schemachange sqlfluff
+
+      - name: Check conventions
+        run: python scripts/check_conventions.py
+
+      - name: Lint SQL
+        run: sqlfluff lint migrations
+
+      - name: Write private key
+        env:
+          PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$PRIVATE_KEY" > "$RUNNER_TEMP/key.p8"
+          chmod 600 "$RUNNER_TEMP/key.p8"
+          echo "SNOWFLAKE_PRIVATE_KEY_PATH=$RUNNER_TEMP/key.p8" >> "$GITHUB_ENV"
+
+      - name: Dry run against DEV
+        run: |
+          schemachange deploy --config-folder . --dry-run \
+            -c "$SF_DATABASE.DEPLOY_META.CHANGE_HISTORY" \
+            --vars "{\"db\": \"$SF_DATABASE\"}"
